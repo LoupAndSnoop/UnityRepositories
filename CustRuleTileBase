@@ -1,0 +1,276 @@
+using System;
+using System.Linq;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.Tilemaps;
+using Unity.VisualScripting;
+using System.Runtime.CompilerServices;
+
+#region Prepare search for ruletiles with Static shared class\
+namespace LoupRuleTiles {
+    /// <summary> This class just holds static info for all custom ruletile logic. </summary>
+    public class CustRuleTileStatic {
+        public static bool blockRefresh = false;
+        public static TileDirectory tileDirectory { get; private set; }
+        public static LevelSettings levelSettings { get; private set; }
+        public static Tilemap[] ruleMapsGround { get; private set; }
+        public static Tilemap[] ruleMapsWire { get; private set; }
+        public static Tilemap[] ruleMapsFlat { get; private set; }
+
+        /// <summary> Set up static variables for ruletiles to use to search quickly. So we restrict search to only the
+        /// maps that need to be checked. </summary>
+        public static void InitializeStaticSearchVariables() {
+            tileDirectory = TileDirectoryCentral.GetInstance().tileDirectory;
+            levelSettings = LevelSettingsCentral.GetInstance().levelSettings;
+            HashSet<Tilemap> ruleMapSetGround = new HashSet<Tilemap>();
+            HashSet<Tilemap> ruleMapSetWire = new HashSet<Tilemap>();
+            HashSet<Tilemap> ruleMapSetFlat = new HashSet<Tilemap>();
+
+            List<BuildingObjectBase> basesToCheck = tileDirectory.directory.Values.ToList();
+            foreach (BuildingObjectBase objBase in basesToCheck) {
+                if (objBase.ruleGroundDir != Cardinal.None) ruleMapSetGround.Add(objBase.tileLayer.tilemap);
+                if (objBase.rulePresentFlatSurfaces != Cardinal.None) ruleMapSetFlat.Add(objBase.tileLayer.tilemap);
+                if (objBase.ruleConnectWire) ruleMapSetWire.Add(objBase.tileLayer.tilemap);
+            }
+
+            ruleMapsGround = ruleMapSetGround.ToArray();
+            ruleMapsWire = ruleMapSetWire.ToArray();
+            ruleMapsFlat = ruleMapSetFlat.ToArray();
+            blockRefresh = false;
+        }
+    }
+    #endregion
+
+    /// <summary> This is the base class for custom rule tiles to derive. It has the machinery to allow
+    /// the game to search for nearby tiles across multiple tilemaps that satisfy requirements
+    /// specified in the BuildingObjectBase. </summary>
+    public abstract class CustRuleTileBase<TNeighbor> : RuleTile<TNeighbor> {
+        //public bool customField;
+
+        public Sprite GetDefaultSprite() { return m_DefaultSprite; }
+
+        /// <summary> Input coordinates to check and neighbor rule ID, and output whether or not that coordinate works. </summary>
+        public abstract bool RuleMatchCoordinate(int neighbor, Vector3Int currentTileCoord, Vector3Int targetTileCoord);
+
+        /// <summary> Return true iff there is a neighboring tile presenting a a cardinal pointed at the original given
+        /// that function (objbase => cardinal) (eg obj=>obj.ruleGround). This accounts for rotation. </summary>
+        protected bool CheckMatedRuleCardinals(Vector3Int currentTileCoord, Vector3Int neighborTileCoord,
+            List<BuildingObjectBase> neighborBases, Func<BuildingObjectBase, Cardinal> ruleCardinalProperty) {
+            // Part 1: Get cardinal representation, and if there is not one, then it's a fail.
+            Vector2Int mainToNeighborVec = (Vector2Int)(neighborTileCoord - currentTileCoord);
+            bool isCardinal = GridMath.cardinalVectors.Contains(mainToNeighborVec);
+            if (!isCardinal) return false;
+            Cardinal neighborToMainCard = GridMath.VectorToCardinal(-mainToNeighborVec);
+
+            foreach (BuildingObjectBase neighborBase in neighborBases) {
+                Rotation neighborRotation = CustRuleTileStatic.tileDirectory.GetRotation(neighborBase.tileLayer.tilemap, (Vector2Int)neighborTileCoord);
+                Cardinal neighborDirections = GridMath.RotateCardinal(
+                    ruleCardinalProperty(neighborBase), neighborRotation);
+                if (neighborDirections.HasFlag(neighborToMainCard)) return true;
+            }
+            return false;
+        }
+
+        /// <summary> Return true iff there is a neighboring that counts as ground OR it is out of bounds. </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        protected bool CheckGround(Vector3Int currentTileCoord, Vector3Int neighborTileCoord, List<BuildingObjectBase> neighborBases) {
+            if (CoordIsOutsideLevelBounds(neighborTileCoord)) return true;
+
+            //// Quickcheck for just ground or null, which should be the majority.
+            //if (neighborBases.Count == 0 || neighborBases[0].ruleGroundDir == Cardinal.None) return false;
+            //if (neighborBases[0].ruleGroundDir == (Cardinal)15) return true;
+            return CheckMatedRuleCardinals(currentTileCoord, neighborTileCoord, neighborBases,
+                objBase => objBase.ruleGroundDir);
+        }
+
+        //[MethodImpl(MethodImplOptions.AggressiveInlining)]
+        //protected bool CoordIsOutsideLevelBounds(Vector3Int tileCoord, BoundsInt bounds) {
+        //    return (tileCoord.x < bounds.xMin && tileCoord.x > bounds.xMax
+        //        && tileCoord.y < bounds.yMin && tileCoord.y > bounds.yMax);
+        //}
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        protected bool CoordIsOutsideLevelBounds(Vector3Int tileCoord) {
+            BoundsInt bounds = CustRuleTileStatic.levelSettings.levelBounds;
+            return (tileCoord.x < bounds.xMin && tileCoord.x > bounds.xMax
+                && tileCoord.y < bounds.yMin && tileCoord.y > bounds.yMax);
+        }
+
+        /// <summary> Return true iff there is a neighboring tile presenting a valid flat face to this tile at that coordinate. </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        protected bool CheckFlatFace(Vector3Int currentTileCoord, Vector3Int neighborTileCoord, List<BuildingObjectBase> neighborBases) {
+            return CheckMatedRuleCardinals(currentTileCoord, neighborTileCoord, neighborBases,
+                objBase => objBase.rulePresentFlatSurfaces);
+
+            //// Part 1: Get cardinal representation, and if there is not one, then it's a fail.
+            //Vector2Int mainToNeighborVec = (Vector2Int)(neighborTileCoord - currentTileCoord);
+            //bool isCardinal = GridMath.cardinalVectors.Contains(mainToNeighborVec);
+            //if (!isCardinal) return false;
+            //Cardinal neighborToMainCard = GridMath.VectorToCardinal(-mainToNeighborVec);
+
+            //foreach (BuildingObjectBase neighborBase in neighborBases) {
+            //    Rotation neighborRotation = tileDirectory.GetRotation(neighborBase.tileLayer.tilemap, (Vector2Int)neighborTileCoord);
+            //    Cardinal neighborFaces = GridMath.RotateCardinal(neighborBase.rulePresentFlatSurfaces, neighborRotation);
+            //    if (neighborFaces.HasFlag(neighborToMainCard)) return true;
+            //}
+            //return false;
+        }
+
+        /// <summary> Return true iff this neighboring position contains an object base that it could be connected to electrically with wire, and it is wire-compatible. </summary>
+        protected bool CheckWire(Vector3Int currentTileCoord, Vector3Int neighborTileCoord, BuildingObjectBase thisObjBase, List<BuildingObjectBase> neighborBases) {
+            // Part 1: Get cardinal representation, and if there is not one, then it's a fail.
+            Vector2Int mainToNeighborVec = (Vector2Int)(neighborTileCoord - currentTileCoord);
+            bool isCardinal = GridMath.cardinalVectors.Contains(mainToNeighborVec);
+            if (!isCardinal) return false;
+            Cardinal mainToNeighborDirection = GridMath.VectorToCardinal(mainToNeighborVec);
+
+            // Part2: Check for valid electrical connections.
+            Rotation mainRotation = CustRuleTileStatic.tileDirectory.GetRotation(thisObjBase.tileLayer.tilemap, (Vector2Int)currentTileCoord);
+            foreach (BuildingObjectBase neighborBase in neighborBases) {
+                if (!neighborBase.ruleConnectWire) continue;
+
+                // Check electricity from neighbor to main, and from main to neighbor
+                Rotation neighborRotation = CustRuleTileStatic.tileDirectory.GetRotation(neighborBase.tileLayer.tilemap, (Vector2Int)neighborTileCoord);
+                if (GridMath.CheckMatedCardinals(GridMath.RotateCardinal(thisObjBase.allowElecIn | thisObjBase.allowElecInWithoutOut, mainRotation),
+                    GridMath.RotateCardinal(neighborBase.allowElecOut, neighborRotation), mainToNeighborDirection)) return true;
+                if (GridMath.CheckMatedCardinals(GridMath.RotateCardinal(thisObjBase.allowElecOut, mainRotation),
+                    GridMath.RotateCardinal(neighborBase.allowElecIn | neighborBase.allowElecInWithoutOut, neighborRotation), mainToNeighborDirection)) return true;
+            }
+
+            return false;
+        }
+
+        /// <summary> Return true iff this neighboring position contains an contiguous object base that is allowed to be connected to to us, given locking constraints. </summary>
+        protected bool CheckUnlockedSelf(Vector3Int currentTileCoord, Vector3Int neighborTileCoord, BuildingObjectBase thisObjBase) {
+            //if (CoordIsOutsideLevelBounds(neighborTileCoord)) return false; // We definitely can't connect to things out of bounds
+            // We only need to check our own map.
+            TileBase neighborTileBase = thisObjBase.tileLayer.tilemap.GetTile(neighborTileCoord);
+            if (neighborTileBase == null) return false;
+
+            BuildingObjectBase neighborBase = CustRuleTileStatic.tileDirectory.directory[neighborTileBase];
+            if (neighborBase.autoObjConversionMainObjBase != thisObjBase.autoObjConversionMainObjBase) return false; // Must be ourself.
+
+            // Part 1: Get cardinal representation, and if there is not one, then it's a fail.
+            Vector2Int mainToNeighborVec = (Vector2Int)(neighborTileCoord - currentTileCoord);
+            bool isCardinal = GridMath.cardinalVectors.Contains(mainToNeighborVec);
+            if (!isCardinal) return false;
+            Cardinal mainToNeighborDirection = GridMath.VectorToCardinal(mainToNeighborVec);
+
+            // Part 2: Depending on connecting type is how we parse it.
+            Debug.Assert(thisObjBase.autoObjConversion == AutoTileToObjectType.ContiguousHorizontal ||
+                thisObjBase.autoObjConversion == AutoTileToObjectType.ContiguousVertical,
+                "This rule does not make sense for objectbases that do not connect as contiguous lines!");
+
+            Cardinal neighborUpstreamDir, neighborDownStreamDir;
+            if (thisObjBase.autoObjConversion == AutoTileToObjectType.ContiguousHorizontal) {
+                neighborUpstreamDir = Cardinal.Left;
+                neighborDownStreamDir = Cardinal.Right;
+            } else { // ContiguousVertical case
+                neighborUpstreamDir = Cardinal.Up;
+                neighborDownStreamDir = Cardinal.Down;
+            }
+
+            // Now we know if neighbor is up/downstream, we need to check if neighbor allows connection to us.
+            if (mainToNeighborDirection == neighborUpstreamDir
+                && (neighborBase.autoObjConversionContigRule == AutoTileToObjContiguousConnect.Free
+                || neighborBase.autoObjConversionContigRule == AutoTileToObjContiguousConnect.ForceStart))
+                return true;
+            else if (mainToNeighborDirection == neighborDownStreamDir
+                && (neighborBase.autoObjConversionContigRule == AutoTileToObjContiguousConnect.Free
+                || neighborBase.autoObjConversionContigRule == AutoTileToObjContiguousConnect.ForceEnd))
+                return true;
+            else return false;
+        }
+
+        //--------------------------
+        //-------------Don't Fuck with anything below here. I copy-pasted from unity's assembly, with a few key edits.
+        //-------------------------
+        #region Overriding Unity's Rulematches function to feed me position
+        public override bool RuleMatches(TilingRule rule, Vector3Int position, ITilemap tilemap, ref Matrix4x4 transform) {
+            if (CustRuleTileStatic.blockRefresh)
+                return true;// Loup edit.
+
+            if (RuleMatchesCust(rule, position, tilemap, 0)) {
+                transform = Matrix4x4.TRS(Vector3.zero, Quaternion.Euler(0f, 0f, 0f), Vector3.one);
+                return true;
+            }
+            if (rule.m_RuleTransform == TilingRuleOutput.Transform.Rotated) {
+                for (int i = m_RotationAngle; i < 360; i += m_RotationAngle) {
+                    if (RuleMatchesCust(rule, position, tilemap, i)) {
+                        transform = Matrix4x4.TRS(Vector3.zero, Quaternion.Euler(0f, 0f, (float)(-i)), Vector3.one);
+                        return true;
+                    }
+                }
+            } else if (rule.m_RuleTransform == TilingRuleOutput.Transform.MirrorXY) {
+                if (RuleMatchesCust(rule, position, tilemap, mirrorX: true, mirrorY: true)) {
+                    transform = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, new Vector3(-1f, -1f, 1f));
+                    return true;
+                }
+                if (RuleMatchesCust(rule, position, tilemap, mirrorX: true, mirrorY: false)) {
+                    transform = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, new Vector3(-1f, 1f, 1f));
+                    return true;
+                }
+                if (RuleMatchesCust(rule, position, tilemap, mirrorX: false, mirrorY: true)) {
+                    transform = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, new Vector3(1f, -1f, 1f));
+                    return true;
+                }
+            } else if (rule.m_RuleTransform == TilingRuleOutput.Transform.MirrorX) {
+                if (RuleMatchesCust(rule, position, tilemap, mirrorX: true, mirrorY: false)) {
+                    transform = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, new Vector3(-1f, 1f, 1f));
+                    return true;
+                }
+            } else if (rule.m_RuleTransform == TilingRuleOutput.Transform.MirrorY) {
+                if (RuleMatchesCust(rule, position, tilemap, mirrorX: false, mirrorY: true)) {
+                    transform = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, new Vector3(1f, -1f, 1f));
+                    return true;
+                }
+            } else if (rule.m_RuleTransform == TilingRuleOutput.Transform.RotatedMirror) {
+                for (int j = 0; j < 360; j += m_RotationAngle) {
+                    if (j != 0 && RuleMatchesCust(rule, position, tilemap, j)) {
+                        transform = Matrix4x4.TRS(Vector3.zero, Quaternion.Euler(0f, 0f, (float)(-j)), Vector3.one);
+                        return true;
+                    }
+                    if (RuleMatchesCust(rule, position, tilemap, j, mirrorX: true)) {
+                        transform = Matrix4x4.TRS(Vector3.zero, Quaternion.Euler(0f, 0f, (float)(-j)), new Vector3(-1f, 1f, 1f));
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+
+        // Lower level RuleMatches. I am basically overriding to get more of the info that I actually need.
+        public bool RuleMatchesCust(TilingRule rule, Vector3Int position, ITilemap tilemap, int angle, bool mirrorX = false) {
+            int num = Math.Min(rule.m_Neighbors.Count, rule.m_NeighborPositions.Count);
+            for (int i = 0; i < num; i++) {
+                int neighbor = rule.m_Neighbors[i];
+                Vector3Int position2 = rule.m_NeighborPositions[i];
+                if (mirrorX) {
+                    position2 = GetMirroredPosition(position2, mirrorX: true, mirrorY: false);
+                }
+                Vector3Int rotatedPosition = GetRotatedPosition(position2, angle);
+                //TileBase tile = tilemap.GetTile(GetOffsetPosition(position, rotatedPosition));
+                if (!RuleMatchCoordinate(neighbor, position, GetOffsetPosition(position, rotatedPosition))) {
+                    //if (!RuleMatchCoordinate(neighbor, tile)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        public bool RuleMatchesCust(TilingRule rule, Vector3Int position, ITilemap tilemap, bool mirrorX, bool mirrorY) {
+            int num = Math.Min(rule.m_Neighbors.Count, rule.m_NeighborPositions.Count);
+            for (int i = 0; i < num; i++) {
+                int neighbor = rule.m_Neighbors[i];
+                Vector3Int mirroredPosition = GetMirroredPosition(rule.m_NeighborPositions[i], mirrorX, mirrorY);
+                //TileBase tile = tilemap.GetTile(GetOffsetPosition(position, mirroredPosition));
+                if (!RuleMatchCoordinate(neighbor, position, GetOffsetPosition(position, mirroredPosition))) {//tile)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        #endregion
+
+    }
+}
