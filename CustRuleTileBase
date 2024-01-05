@@ -8,6 +8,37 @@ using System.Runtime.CompilerServices;
 
 #region Prepare search for ruletiles with Static shared class\
 namespace LoupRuleTiles {
+[CreateAssetMenu(fileName = "NewRuleTile", menuName = "Level Builder/Custom Rule Tile/Basic")]
+    public class CustRuleTile : CustRuleTileBase<CustRuleTile.Neighbor> {
+        public class Neighbor : RuleTile.TilingRule.Neighbor {
+            //public const int This = 1;
+            //public const int NotThis = 2;
+            public const int IsGround = 3;
+            public const int NotGround = 4;
+        }
+
+        /// <summary> Input coordinates to check and neighbor rule ID, and output whether or not that coordinate works. </summary>
+        public override bool RuleMatchCoordinate(int neighbor, Vector3Int currentTileCoord, Vector3Int targetTileCoord) {
+            // If the maps are null because quitting, just return true.
+            //TileDirectory tileDirectory = TileDirectoryCentral.GetInstance().tileDirectory;
+            //List<BuildingObjectBase> objBasesFound = MapSearch.PierceGetTile(targetTileCoord);
+            BuildingObjectBase thisObjBase = CustRuleTileStatic.tileDirectory.directory[this];
+            TileBase neighborTile;
+            switch (neighbor) {
+                case Neighbor.This:
+                    neighborTile = thisObjBase.tileLayer.tilemap.GetTile(targetTileCoord);
+                    return (neighborTile != null) && CustRuleTileStatic.tileDirectory.directory[neighborTile] == thisObjBase;
+                case Neighbor.NotThis:
+                    neighborTile = thisObjBase.tileLayer.tilemap.GetTile(targetTileCoord);
+                    return (neighborTile == null) || CustRuleTileStatic.tileDirectory.directory[neighborTile] != thisObjBase;
+                case Neighbor.IsGround: return CheckGround(currentTileCoord, targetTileCoord, MapSearch.PierceGetTile(targetTileCoord, CustRuleTileStatic.ruleMapsGround));
+                case Neighbor.NotGround: return !CheckGround(currentTileCoord, targetTileCoord, MapSearch.PierceGetTile(targetTileCoord, CustRuleTileStatic.ruleMapsGround));
+                default: return false;
+            }
+        }
+    }
+
+
     /// <summary> This class just holds static info for all custom ruletile logic. </summary>
     public class CustRuleTileStatic {
         public static bool blockRefresh = false;
