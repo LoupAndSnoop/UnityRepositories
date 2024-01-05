@@ -6,6 +6,19 @@ using UnityEngine.Tilemaps;
 using Unity.VisualScripting;
 using System.Runtime.CompilerServices;
 
+/*
+These are some basic classes for custom ruletiles that specifically get and use specific tile coordinates to evaluate.
+I have removed some parts unique to my project to make more clear the basics of how it works.
+
+CustRuleTileStatic has references to things that are important for evaluating the ruletile that only exist during runtime. Example: References to Tilemaps
+CustRuleTileBase<TNeighbor> contains a VERY important override to the CheckRuleTile method that gives us the coordinate being checked. This class ALSO gets ALL rule logic. Every single rule that you can include in a custom ruletile goes here
+do NOT define actual logic for a type of rule outside of this class, and you'll see why next 
+I just committed with the important 3rd class: CustRuleTile : CustRuleTileBase<CustRuleTile.Neighbor>
+CustRuleTile has it's own neighbor class which just contains constants for different neighbor rules. CustRuleTile : CustRuleTileBase<CustRuleTile.Neighbor> so that the rule tile methods know to use this neighbor rule
+AND it has public override bool RuleMatchCoordinate(int neighbor, Vector3Int currentTileCoord, Vector3Int targetTileCoord) {....
+which is the function that funnels different rules to different logic via switch case
+*/
+
 #region Prepare search for ruletiles with Static shared class\
 namespace LoupRuleTiles {
 [CreateAssetMenu(fileName = "NewRuleTile", menuName = "Level Builder/Custom Rule Tile/Basic")]
