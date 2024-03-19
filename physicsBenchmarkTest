@@ -1,0 +1,235 @@
+
+/// <summary> Basic method for benchmarking. totalCount is an optional argument, where if non-zero, also print time/totalCount.</summary>
+    private void MeasureBenchmark(Action action, string msg, int totalCount = 0) {
+        Stopwatch stopwatch = new Stopwatch();
+        stopwatch.Start();
+        action();
+        stopwatch.Stop();
+
+        benchmarkText.Append($"Execution time of {msg}: {stopwatch.ElapsedTicks} ticks, {stopwatch.ElapsedMilliseconds} ms");
+        if (totalCount != 0) benchmarkText.Append($". {stopwatch.ElapsedMilliseconds / (float)totalCount} ms each");
+        benchmarkText.Append("\n");
+
+        //UnityEngine.Debug.Log($"Execution time of {msg}: {stopwatch.ElapsedTicks} ticks, {stopwatch.ElapsedMilliseconds} ms");
+    }
+
+/// <summary> Compare physics methods.</summary>
+    private void PhysicsMethodBenchmarking() {
+        int totalCast = 10000;//1000000;
+        int totalDist = 1000000;
+        int totalObj = 1000;
+        int layer1 = Layers.TERRAIN;
+        int layer2 = Layers.ONLY_TOUCH_SOLIDS;
+        Vector2 shift = 0.001f * Vector2.up;
+        float randomJitterMagnitude = 0.5f;
+        float testDist = 1f;
+        Vector2 layer2Offset = new Vector2(10,0);
+
+        // Step 1: Get player collider
+        EntityDataHolder playerEntityData = WorldObjHolderCentral.GetInstance().playerObj.GetComponent<EntityDataHolder>();
+        UnityEngine.Debug.Assert(playerEntityData != null, "no entity data holder found");
+        Collider2D mainCol = playerEntityData.mainCollider;
+        Rigidbody2D playerRB = mainCol.attachedRigidbody;
+        PhysicsMover playerMover = playerRB.gameObject.GetComponent<PhysicsMover>();
+        UnityEngine.Debug.Assert(mainCol != null, "no collider found");
+        Vector2 originalPos = new Vector2(1000, 10);//playerRB.position;
+        List<RaycastHit2D> raycastHits = new List<RaycastHit2D>();
+        ContactFilter2D filterGround = StdContactFilter.ForceRecieveFilter(mainCol);//StdContactFilter.floorToPlayer;
+
+
+        // Step2: Make colliders on objects to hit
+        playerRB.position = originalPos;
+        List<GameObject> layer1List = new();
+        List<GameObject> layer2List = new();
+        System.Random rand = new System.Random();
+        GameObject MakeNewObj(int layer, Vector2 offset) {
+            GameObject newObj = new GameObject("Cool GameObject made from Code");
+            newObj.layer = layer;
+            BoxCollider2D boxcol = newObj.AddComponent<BoxCollider2D>();
+            Rigidbody2D rb = newObj.AddComponent<Rigidbody2D>();
+            boxcol.size = Vector2.one;
+
+            int angle = rand.Next(0, 359);
+            float jitterMagnitude = rand.Next(0, 100) / 100f * randomJitterMagnitude;
+            rb.position = originalPos + GridMath.StdAngleToVector(angle) * jitterMagnitude + offset;
+            return newObj;
+        }
+        for (int i = 0; i < totalObj; i++) {
+            layer1List.Add(MakeNewObj(layer1, Vector2.zero));
+            layer2List.Add(MakeNewObj(layer2, layer2Offset));
+        }
+
+
+        UnityEngine.Debug.Assert(playerRB.simulated, "RB not simulated");
+        UnityEngine.Debug.Assert(mainCol.enabled, "Collider disabled");
+
+        // This is going to be a part of each
+        void TestMovement() {
+            for (int i = 0; i < totalDist; i++) {
+                playerRB.position += shift;
+            }
+            playerRB.position = originalPos;
+        }
+
+        // Test distance between two colliders
+        void TestColDist() {
+            Collider2D colTest = layer1List[0].GetComponent<Collider2D>();
+            float sum = 0;
+            for (int i = 0; i < totalDist; i++) {
+                sum += mainCol.Distance(colTest).distance;
+                playerRB.position += shift;
+            }
+            playerRB.position = originalPos;
+        }
+
+        // Cast collider, no filter
+        ContactFilter2D noFilter = new();
+        noFilter = noFilter.NoFilter();
+        void TestColCast(ContactFilter2D filter) {
+            int sum = 0;
+            for (int i = 0; i < totalCast; i++) {
+                sum += mainCol.Cast(Vector2.down, filter, raycastHits, testDist);
+                playerRB.position += shift;
+            }
+            playerRB.position = originalPos;
+        }
+
+        LoupPhys2D.KinematicPhysics2D kp = LoupPhys2D.KinematicPhysics2D.GetInstance();
+        //void TestColCastSimple() {
+        //    bool check = false;
+        //    for (int i = 0; i < totalCast; i++) {
+        //        check |= kp.CastDetectReceiveForce(testDist * Vector2.one, mainCol);
+        //        playerRB.position += shift;
+        //    }
+        //    playerRB.position = originalPos;
+        //}
+        void TestColCastUntilForce() {
+            bool check = false;
+            Func<RaycastHit2D, Vector2, bool> ignoreHitIf = EffectorLogic.ignoreNone.ignoreHitIf;//kp.GetColliderLogic(mainCol).ignoreHitIf;
+            for (int i = 0; i < totalCast; i++) {
+                check |= kp.CastUntilForce(testDist * Vector2.one, mainCol, ignoreHitIf,
+                    out RaycastHit2D hit, out float d, out bool o);
+                playerRB.position += shift;
+            }
+            playerRB.position = originalPos;
+        }
+
+        //Collider2D col = playerRB.gameObject.GetComponent<Collider2D>();
+        void TestOverlapPushed() {
+            float sum = 0f;
+            for (int i = 0; i < totalCast; i++) {
+                foreach (OverlapResult res in kp.OverlapPushedBy(mainCol, filterGround)) {
+                    sum += res.dist.distance;
+                }
+                playerRB.position += shift;
+            }
+            playerRB.position = originalPos;
+        }
+        List<Collider2D> basicResultList = new(totalObj * 2);
+        void TestOverlapBasic(ContactFilter2D filter) {
+            int sum = 0;
+            for (int i = 0; i < totalCast; i++) {
+                sum += mainCol.OverlapCollider(filter, basicResultList);
+                playerRB.position += shift;
+            }
+            playerRB.position = originalPos;
+        }
+
+        /////////// Fast distance scoping RESULT: Not worth it.
+        // Preliminary method to test faster distance function, based on dictionaries.
+        Dictionary<Type, int> colliderSimpleDict = new Dictionary<Type, int>() { { typeof(BoxCollider2D), 0 },
+            { typeof(CircleCollider2D), 0 }, { typeof(CustomCollider2D), 1 }, { typeof(EdgeCollider2D), 2 }};
+        Dictionary<(int x, int y), int> combineDict = new() { { (0, 0), 0 }, { (0, 1), 1 }, { (1, 1), 1 }, { (1, 2), 2 } };
+        Vector2 FastDistance(Collider2D col1, Collider2D col2) {
+            int type1 = colliderSimpleDict[col1.GetType()];
+            int type2 = colliderSimpleDict[col2.GetType()];
+            int methodID = combineDict[(type1, type2)];
+            switch (methodID) {
+                case 0: return col1.attachedRigidbody.position - col2.attachedRigidbody.position; // No timesave
+                case 1: return col1.bounds.center - col2.bounds.center; // About 40% timesave.
+                case 2: return col1.bounds.center - col2.bounds.center;
+                default: return Vector2.zero;
+            }
+        }
+        void TestFastDistance() {
+            Collider2D colTest = layer1List[0].GetComponent<Collider2D>();
+            float sum = 0;
+            for (int i = 0; i < totalDist; i++) {
+                sum += FastDistance(mainCol, colTest).x;
+                playerRB.position += shift;
+            }
+            playerRB.position = originalPos;
+        }
+
+        // Independent of others
+        MeasureBenchmark(TestMovement, "Test movement: ", totalDist);
+        MeasureBenchmark(TestColDist, "Test dist: ", totalDist);
+        MeasureBenchmark(TestFastDistance, "Test fast dist: ", totalDist);
+
+        MeasureBenchmark(() => TestColCast(noFilter), "Test cast without filter: ", totalCast);
+        MeasureBenchmark(() =>TestColCast(filterGround), "Test cast with filter: ", totalCast);
+        //MeasureBenchmark(() => TestColCastSimple(), "Test cast (simple bool): ", totalCast);
+        MeasureBenchmark(() => TestColCastUntilForce(), "Test cast until force ", totalCast);
+        MeasureBenchmark(() => TestOverlapBasic(noFilter), "Test overlap without filter: ", totalCast);
+        MeasureBenchmark(() => TestOverlapBasic(filterGround), "Test overlap with filter: ", totalCast);
+        MeasureBenchmark(TestOverlapPushed, "Test overlap pushed: ", totalCast);
+
+        UnityEngine.Debug.Log("Now removing all Layer2 obejcts.");
+        foreach (GameObject obj in layer2List) {
+            obj.SetActive(false);
+            Destroy(obj);
+        }
+
+        MeasureBenchmark(() => TestColCast(noFilter), "(No layer2) Test cast without filter: ", totalCast);
+        MeasureBenchmark(() => TestColCast(filterGround), "(No layer2) Test cast with filter: ", totalCast);
+        //MeasureBenchmark(() => TestColCastSimple(), "(No layer2)Test cast (simple bool): ", totalCast);
+        MeasureBenchmark(() => TestColCastUntilForce(), "(No layer2) Test cast until force ", totalCast);
+        MeasureBenchmark(() => TestOverlapBasic(noFilter), "(No layer2) Test overlap without filter: ", totalCast);
+        MeasureBenchmark(() => TestOverlapBasic(filterGround), "(No layer2) Test overlap with filter: ", totalCast);
+        MeasureBenchmark(TestOverlapPushed, "(No layer2) Test overlap pushed: ", totalCast);
+
+        UnityEngine.Debug.Break();
+        // Results:
+        // 1) Adding filter straight up improves performance. Real cost is proportional to number of unfiltered things. Applies to both Cast and Overlap
+        // 2) Overlap pushedby costs roughly 10x just basic overlap method.
+        // 3) .Distance costs ~1 microsecond per call. It is not worth optimizing.
+        // 4) In a dense blob of about 1000 things, cast costs about 0.27 ms each, and overlap pushed by costs about 0.4 ms each.
+        // 5) Dense blob makes cast/overlap queries more expensive (given objects in the blob are not filtered out.
+        // 6) CastUntilForce and sifting through each result, there is very minimal time gain by breaking out the moment you find one
+        // you want and returning a bool. Might as well do the most with the cast.
+
+        //Execution time of Test movement: : 2859862 ticks, 285 ms. 0.000285 ms each
+        //Execution time of Test dist: : 9758446 ticks, 975 ms. 0.000975 ms each
+        //Execution time of Test fast dist: : 8249105 ticks, 824 ms. 0.000824 ms each
+        //Execution time of Test cast without filter: : 67280766 ticks, 6728 ms. 0.6728 ms each
+        //Execution time of Test cast with filter: : 25081222 ticks, 2508 ms. 0.2508 ms each
+        //Execution time of Test cast (simple bool): : 10173622 ticks, 1017 ms. 0.1017 ms each
+        //Execution time of Test overlap without filter: : 16397233 ticks, 1639 ms. 0.1639 ms each
+        //Execution time of Test overlap with filter: : 8101066 ticks, 810 ms. 0.081 ms each
+        //Execution time of Test overlap pushed: : 42852341 ticks, 4285 ms. 0.4285 ms each
+        //Execution time of(No layer2) Test cast without filter: : 24127861 ticks, 2412 ms. 0.2412 ms each
+        //Execution time of(No layer2) Test cast with filter: : 23590509 ticks, 2359 ms. 0.2359 ms each
+        //Execution time of(No layer2) Test overlap without filter: : 5317965 ticks, 531 ms. 0.0531 ms each
+        //Execution time of(No layer2) Test overlap with filter: : 5625613 ticks, 562 ms. 0.0562 ms each
+        //Execution time of(No layer2) Test overlap pushed: : 31670168 ticks, 3167 ms. 0.3167 ms each
+
+        /// If I move everything in layer 2 over by 10 units, so it isn't in a ball.
+
+        //Execution time of Test movement: : 2852504 ticks, 285 ms. 0.000285 ms each
+        //Execution time of Test dist: : 9648600 ticks, 964 ms. 0.000964 ms each
+        //Execution time of Test fast dist: : 8349332 ticks, 834 ms. 0.000834 ms each
+        //Execution time of Test cast without filter: : 23523867 ticks, 2352 ms. 0.2352 ms each <= 3x faster
+        //Execution time of Test cast with filter: : 24263963 ticks, 2426 ms. 0.2426 ms each
+        //Execution time of Test cast(simple bool): : 11006298 ticks, 1100 ms. 0.11 ms each
+        //Execution time of Test cast until force: 16014694 ticks, 1601 ms. 0.1601 ms each
+        //Execution time of Test overlap without filter: : 5274253 ticks, 527 ms. 0.0527 ms each // <= 3x faster
+        //Execution time of Test overlap with filter: : 5596495 ticks, 559 ms. 0.0559 ms each
+        //Execution time of Test overlap pushed: : 32188575 ticks, 3218 ms. 0.3218 ms each
+        //Execution time of(No layer2) Test cast without filter: : 23103244 ticks, 2310 ms. 0.231 ms each
+        //Execution time of(No layer2) Test cast with filter: : 23864044 ticks, 2386 ms. 0.2386 ms each
+        //Execution time of(No layer2)Test cast(simple bool): : 9991114 ticks, 999 ms. 0.0999 ms each
+        //Execution time of(No layer2) Test cast until force : 13940587 ticks, 1394 ms. 0.1394 ms each
+        //Execution time of(No layer2) Test overlap without filter: : 5251334 ticks, 525 ms. 0.0525 ms each
+        //Execution time of(No layer2) Test overlap with filter: : 5721202 ticks, 572 ms. 0.0572 ms each
+        //Execution time of(No layer2) Test overlap pushed: : 31374063 ticks, 3137 ms. 0.3137 ms each
+    }
