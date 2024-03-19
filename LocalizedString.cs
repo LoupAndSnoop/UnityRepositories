@@ -13,7 +13,7 @@ public class LocalizedString : IEnumerable<(LocalizedString.Language, string)> {
     #region Static language control
     public const Language DEFAULT_LANGAGE = Language.English;
     /// <summary>Current system Language. </summary>
-    public static Language language = DEFAULT_LANGAGE;
+    public static Language language { get; private set; } = DEFAULT_LANGAGE;
     /// <summary>Assign the language we will use for strings.</summary>
     public static void AssignGlobalLanguage() {
         language = Application.systemLanguage switch {
